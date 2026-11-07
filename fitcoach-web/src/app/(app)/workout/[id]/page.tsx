@@ -8,8 +8,40 @@ import { estimate1RM, increment, nextTarget, warmups } from '@/lib/overload';
 import { prettyDate } from '@/lib/dates';
 import type { Exercise, HistoryRow, Workout, WorkoutExercise } from '@/lib/types';
 import { Button, Card, ErrorText, Input } from '@/components/ui';
+import { ExercisePicker } from '@/components/ExercisePicker';
 
 type Prev = { date: string; sets: { weight: number; reps: number }[]; best1RM: number };
+
+/** The most recent earlier session of one exercise, plus its best estimated 1RM. */
+async function fetchPrev(exerciseId: string, beforeDate: string): Promise<Prev | null> {
+  const { data } = await supabase
+    .from('exercise_history')
+    .select('exercise_id, workout_date, set_number, weight, reps')
+    .eq('exercise_id', exerciseId)
+    .lt('workout_date', beforeDate)
+    .order('workout_date', { ascending: false })
+    .limit(300);
+  const p: Prev = { date: '', sets: [], best1RM: 0 };
+  for (const row of (data ?? []) as HistoryRow[]) {
+    if (!p.date) p.date = row.workout_date;
+    if (row.workout_date === p.date) p.sets.push({ weight: Number(row.weight), reps: row.reps });
+    p.best1RM = Math.max(p.best1RM, estimate1RM(Number(row.weight), row.reps));
+  }
+  return p.date ? p : null;
+}
+
+const RPE_HINT: Record<number, string> = {
+  1: 'Very light',
+  2: 'Very light',
+  3: 'Light',
+  4: 'Moderate',
+  5: 'Moderate',
+  6: 'Somewhat hard',
+  7: 'Hard, a few reps left in the tank',
+  8: 'Very hard, about 2 reps left',
+  9: 'Almost max, 1 rep left',
+  10: 'All-out',
+};
 
 /* ---------- small hooks ---------- */
 
@@ -109,6 +141,11 @@ export default function WorkoutPage() {
   const [now, setNow] = useState(() => Date.now());
   const [prSets, setPrSets] = useState<string[]>([]);
   const [showPicker, setShowPicker] = useState(false);
+  const [swapping, setSwapping] = useState<WorkoutExercise | null>(null);
+  const [myEquipment, setMyEquipment] = useState<string[]>([]);
+  const [notes, setNotes] = useState('');
+  const [savedNotes, setSavedNotes] = useState('');
+  const [showFinish, setShowFinish] = useState(false);
   const [error, setError] = useState('');
   const timer = useRestTimer();
   const prRef = useRef<Record<string, number>>({});
@@ -123,7 +160,7 @@ export default function WorkoutPage() {
     }
     const { data: rows } = await supabase
       .from('workout_exercises')
-      .select('*, exercises(id, name, primary_muscle, equipment, is_compound), sets(*)')
+      .select('*, exercises(id, name, primary_muscle, equipment, is_compound, instructions, user_id), sets(*)')
       .eq('workout_id', id)
       .order('position');
     const list = ((rows ?? []) as unknown as WorkoutExercise[]).map((r) => ({
@@ -133,8 +170,9 @@ export default function WorkoutPage() {
         .sort((a, b) => a.set_number - b.set_number),
     }));
 
-    const { data: p } = await supabase.from('profiles').select('units').maybeSingle();
+    const { data: p } = await supabase.from('profiles').select('units, equipment').maybeSingle();
     if (p?.units) setUnits(p.units);
+    setMyEquipment(p?.equipment ?? []);
 
     // Previous sessions for these exercises (finished workouts before this one)
     const prevMap: Record<string, Prev> = {};
@@ -156,6 +194,8 @@ export default function WorkoutPage() {
     prRef.current = Object.fromEntries(Object.entries(prevMap).map(([k, v]) => [k, v.best1RM]));
     setPrev(prevMap);
     setWorkout(w as Workout);
+    setNotes((w as Workout).notes ?? '');
+    setSavedNotes((w as Workout).notes ?? '');
     setItems(list);
     setLoaded(true);
   }, [id]);
@@ -235,20 +275,8 @@ export default function WorkoutPage() {
       .select('*')
       .single();
     if (error) return setError(error.message);
-    const { data: hist } = await supabase
-      .from('exercise_history')
-      .select('exercise_id, workout_date, set_number, weight, reps')
-      .eq('exercise_id', ex.id)
-      .lt('workout_date', workout?.workout_date ?? '9999-12-31')
-      .order('workout_date', { ascending: false })
-      .limit(300);
-    const p: Prev = { date: '', sets: [], best1RM: 0 };
-    for (const row of (hist ?? []) as HistoryRow[]) {
-      if (!p.date) p.date = row.workout_date;
-      if (row.workout_date === p.date) p.sets.push({ weight: Number(row.weight), reps: row.reps });
-      p.best1RM = Math.max(p.best1RM, estimate1RM(Number(row.weight), row.reps));
-    }
-    if (p.date) {
+    const p = await fetchPrev(ex.id, workout?.workout_date ?? '9999-12-31');
+    if (p) {
       setPrev((cur) => ({ ...cur, [ex.id]: p }));
       prRef.current[ex.id] = p.best1RM;
     }
@@ -262,10 +290,35 @@ export default function WorkoutPage() {
     setItems((cur) => cur.filter((x) => x.id !== we.id));
   }
 
-  async function finish() {
+  async function swapExercise(we: WorkoutExercise, ex: Exercise) {
+    setSwapping(null);
+    setError('');
+    const { error } = await supabase.from('workout_exercises').update({ exercise_id: ex.id }).eq('id', we.id);
+    if (error) return setError(error.message);
+    const p = workout ? await fetchPrev(ex.id, workout.workout_date) : null;
+    if (p) setPrev((cur) => ({ ...cur, [ex.id]: p }));
+    prRef.current[ex.id] = p?.best1RM ?? 0;
+    setItems((cur) => cur.map((x) => (x.id === we.id ? { ...x, exercise_id: ex.id, exercises: ex } : x)));
+  }
+
+  async function saveNotes() {
+    if (notes === savedNotes) return;
+    const { error } = await supabase.from('workouts').update({ notes: notes.trim() || null }).eq('id', id);
+    if (error) return setError(error.message);
+    setSavedNotes(notes);
+  }
+
+  async function setRpe(value: number | null) {
+    const { error } = await supabase.from('workouts').update({ session_rpe: value }).eq('id', id);
+    if (error) return setError(error.message);
+    setWorkout((w) => (w ? { ...w, session_rpe: value } : w));
+  }
+
+  async function finish(rpe: number | null) {
+    await saveNotes();
     const { error } = await supabase
       .from('workouts')
-      .update({ status: 'done', finished_at: new Date().toISOString() })
+      .update({ status: 'done', finished_at: new Date().toISOString(), session_rpe: rpe })
       .eq('id', id);
     if (error) return setError(error.message);
     router.push('/history');
@@ -308,7 +361,7 @@ export default function WorkoutPage() {
 
       {items.map((we) => (
         <ExerciseCard
-          key={we.id}
+          key={`${we.id}-${we.exercise_id}`}
           we={we}
           prev={prev[we.exercise_id]}
           units={units}
@@ -317,6 +370,7 @@ export default function WorkoutPage() {
           onWarmup={(w) => addWarmups(we, w)}
           onDeleteSet={(sid) => deleteSet(we, sid)}
           onRemove={() => removeExercise(we)}
+          onSwap={we.sets.length === 0 ? () => setSwapping(we) : undefined}
         />
       ))}
 
@@ -324,8 +378,28 @@ export default function WorkoutPage() {
         + Add exercise
       </Button>
 
+      <Card className="space-y-2">
+        <h2 className="text-sm font-semibold">Workout notes</h2>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          onBlur={saveNotes}
+          rows={3}
+          placeholder="How did it feel? Anything to remember or avoid next time?"
+          className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-base dark:border-stone-700 dark:bg-stone-950"
+        />
+        {notes !== savedNotes && <p className="text-xs text-stone-500">Saves when you tap outside the box.</p>}
+      </Card>
+
+      {workout.status === 'done' && (
+        <Card className="space-y-2">
+          <h2 className="text-sm font-semibold">Session effort (RPE)</h2>
+          <RpePicker value={workout.session_rpe} onChange={setRpe} />
+        </Card>
+      )}
+
       {workout.status !== 'done' ? (
-        <Button className="w-full" onClick={finish}>
+        <Button className="w-full" onClick={() => setShowFinish(true)}>
           Finish workout
         </Button>
       ) : (
@@ -354,7 +428,28 @@ export default function WorkoutPage() {
         </div>
       )}
 
-      {showPicker && <ExercisePicker onPick={addExercise} onClose={() => setShowPicker(false)} />}
+      {showPicker && (
+        <ExercisePicker
+          title="Add exercise"
+          allowCreate
+          excludeIds={items.map((x) => x.exercise_id)}
+          onPick={addExercise}
+          onClose={() => setShowPicker(false)}
+        />
+      )}
+
+      {swapping && (
+        <ExercisePicker
+          title={`Swap ${swapping.exercises.name}`}
+          lockMuscle={swapping.exercises.primary_muscle}
+          myEquipment={myEquipment}
+          excludeIds={items.map((x) => x.exercise_id)}
+          onPick={(ex) => swapExercise(swapping, ex)}
+          onClose={() => setSwapping(null)}
+        />
+      )}
+
+      {showFinish && <FinishSheet onFinish={finish} onCancel={() => setShowFinish(false)} />}
     </div>
   );
 }
@@ -370,6 +465,7 @@ function ExerciseCard({
   onWarmup,
   onDeleteSet,
   onRemove,
+  onSwap,
 }: {
   we: WorkoutExercise;
   prev?: Prev;
@@ -379,6 +475,7 @@ function ExerciseCard({
   onWarmup: (workingWeight: number) => void;
   onDeleteSet: (setId: string) => void;
   onRemove: () => void;
+  onSwap?: () => void;
 }) {
   const repMin = we.target_reps_min ?? 8;
   const repMax = we.target_reps_max ?? 12;
@@ -393,6 +490,9 @@ function ExerciseCard({
   const r = Number(reps);
   const valid = weight !== '' && reps !== '' && Number.isFinite(w) && w >= 0 && Number.isInteger(r) && r >= 1;
 
+  const [showHow, setShowHow] = useState(false);
+  const steps = (we.exercises.instructions ?? '').split('\n').map((x) => x.trim()).filter(Boolean);
+
   const numberOf = (setId: string) => working.findIndex((x) => x.id === setId) + 1;
 
   return (
@@ -405,10 +505,32 @@ function ExerciseCard({
             {we.target_sets ? ` · ${we.target_sets} sets of ${repMin}–${repMax}` : ''}
           </p>
         </div>
-        <button onClick={onRemove} className="text-xs text-stone-400" aria-label="Remove exercise">
-          Remove
-        </button>
+        <div className="flex shrink-0 gap-3">
+          {onSwap && (
+            <button onClick={onSwap} className="text-xs font-semibold text-blue-600" aria-label="Swap exercise">
+              Swap
+            </button>
+          )}
+          <button onClick={onRemove} className="text-xs text-stone-400" aria-label="Remove exercise">
+            Remove
+          </button>
+        </div>
       </div>
+
+      {steps.length > 0 && (
+        <div>
+          <button onClick={() => setShowHow((v) => !v)} className="text-xs font-semibold text-blue-600">
+            {showHow ? 'Hide instructions' : 'How to do it'}
+          </button>
+          {showHow && (
+            <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-sm text-stone-600 dark:text-stone-300">
+              {steps.map((st, i) => (
+                <li key={i}>{st}</li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
 
       <div className="space-y-0.5 text-xs text-stone-500">
         {target && (
@@ -471,71 +593,52 @@ function ExerciseCard({
   );
 }
 
-/* ---------- exercise picker ---------- */
+/* ---------- effort rating ---------- */
 
-const MUSCLES = [
-  'chest', 'lats', 'middle back', 'lower back', 'shoulders', 'biceps', 'triceps', 'forearms',
-  'quadriceps', 'hamstrings', 'glutes', 'calves', 'abdominals', 'traps',
-];
-
-function ExercisePicker({ onPick, onClose }: { onPick: (e: Exercise) => void; onClose: () => void }) {
-  const [search, setSearch] = useState('');
-  const [muscle, setMuscle] = useState('');
-  const [results, setResults] = useState<Exercise[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const t = setTimeout(async () => {
-      let q = supabase.from('exercises').select('id, name, primary_muscle, equipment, is_compound').order('name').limit(40);
-      if (search) q = q.ilike('name', `%${search}%`);
-      if (muscle) q = q.eq('primary_muscle', muscle);
-      const { data } = await q;
-      if (!cancelled) setResults((data ?? []) as Exercise[]);
-    }, 200);
-    return () => {
-      cancelled = true;
-      clearTimeout(t);
-    };
-  }, [search, muscle]);
-
+function RpePicker({ value, onChange }: { value: number | null; onChange: (v: number | null) => void }) {
   return (
-    <div className="fixed inset-0 z-30 flex flex-col bg-stone-100 dark:bg-stone-950">
-      <div className="mx-auto flex w-full max-w-md flex-1 flex-col overflow-hidden px-4 pt-[max(1rem,env(safe-area-inset-top))]">
-        <div className="mb-3 flex items-center gap-2">
-          <Input autoFocus placeholder="Search exercises" value={search} onChange={(e) => setSearch(e.target.value)} />
-          <Button variant="ghost" onClick={onClose}>
-            Close
+    <div className="space-y-2">
+      <div className="grid grid-cols-5 gap-1.5">
+        {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+          <button
+            key={n}
+            onClick={() => onChange(value === n ? null : n)}
+            className={`rounded-lg py-2.5 text-sm font-semibold ${
+              value === n ? 'bg-blue-600 text-white' : 'bg-stone-100 dark:bg-stone-800'
+            }`}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-stone-500">{value ? `${value}: ${RPE_HINT[value]}` : '1 = very easy, 10 = all-out. Tap again to clear.'}</p>
+    </div>
+  );
+}
+
+function FinishSheet({ onFinish, onCancel }: { onFinish: (rpe: number | null) => void; onCancel: () => void }) {
+  const [rpe, setRpe] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="fixed inset-0 z-30 flex items-end bg-black/40">
+      <div className="mx-auto w-full max-w-md space-y-4 rounded-t-2xl bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] dark:bg-stone-900">
+        <h2 className="text-lg font-bold">Nice work. How hard was that?</h2>
+        <RpePicker value={rpe} onChange={setRpe} />
+        <div className="flex gap-2">
+          <Button
+            className="flex-1"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              onFinish(rpe);
+            }}
+          >
+            {busy ? 'Saving…' : rpe ? 'Save and finish' : 'Finish without rating'}
+          </Button>
+          <Button variant="ghost" disabled={busy} onClick={onCancel}>
+            Back
           </Button>
         </div>
-        <div className="mb-3 flex gap-1.5 overflow-x-auto pb-1">
-          {['', ...MUSCLES].map((m) => (
-            <button
-              key={m || 'all'}
-              onClick={() => setMuscle(m)}
-              className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium ${
-                muscle === m ? 'bg-blue-600 text-white' : 'bg-white dark:bg-stone-800'
-              }`}
-            >
-              {m || 'all'}
-            </button>
-          ))}
-        </div>
-        <ul className="flex-1 space-y-2 overflow-y-auto pb-8">
-          {results.map((ex) => (
-            <li key={ex.id}>
-              <button
-                onClick={() => onPick(ex)}
-                className="w-full rounded-xl bg-white p-3 text-left ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-800"
-              >
-                <p className="font-medium">{ex.name}</p>
-                <p className="text-xs text-stone-500">
-                  {ex.primary_muscle} · {ex.equipment}
-                </p>
-              </button>
-            </li>
-          ))}
-          {results.length === 0 && <li className="py-6 text-center text-sm text-stone-500">No matches. Did you run the exercise seed script?</li>}
-        </ul>
       </div>
     </div>
   );

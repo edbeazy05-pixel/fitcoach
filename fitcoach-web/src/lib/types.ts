@@ -15,6 +15,8 @@ export type Exercise = {
   primary_muscle: string;
   equipment: string;
   is_compound: boolean;
+  instructions?: string | null;
+  user_id?: string | null; // set for custom exercises, null for built-in ones
 };
 
 export type SetRow = {
@@ -48,6 +50,20 @@ export type Workout = {
   started_at: string | null;
   finished_at: string | null;
   ai_rationale: string | null;
+  notes: string | null;
+  session_rpe: number | null;
+};
+
+export type BodyMetric = {
+  id: string;
+  measured_on: string;
+  weight: number | null;
+  body_fat: number | null;
+  waist: number | null;
+  chest: number | null;
+  hips: number | null;
+  arm: number | null;
+  thigh: number | null;
 };
 
 export type HistoryRow = {

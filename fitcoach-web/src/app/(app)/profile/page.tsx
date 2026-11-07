@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { EQUIPMENT_OPTIONS } from '@/lib/splitTemplates';
-import type { Profile } from '@/lib/types';
+import type { Exercise, Profile } from '@/lib/types';
+import { CreateExerciseForm } from '@/components/ExercisePicker';
 import { Button, Card, ErrorText, Field, Input, PageTitle } from '@/components/ui';
 
 const select =
@@ -22,6 +23,9 @@ export default function ProfilePage() {
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [custom, setCustom] = useState<Exercise[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [customError, setCustomError] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -58,6 +62,34 @@ export default function ProfilePage() {
     setSaving(false);
     if (error) setError(error.message);
     else setMsg('Saved');
+  }
+
+  async function loadCustom() {
+    const { data } = await supabase
+      .from('exercises')
+      .select('id, name, primary_muscle, equipment, is_compound, user_id')
+      .not('user_id', 'is', null)
+      .order('name');
+    setCustom((data ?? []) as Exercise[]);
+  }
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadCustom();
+  }, []);
+
+  async function removeCustom(ex: Exercise) {
+    if (!confirm(`Delete "${ex.name}"?`)) return;
+    setCustomError('');
+    const { error } = await supabase.from('exercises').delete().eq('id', ex.id);
+    if (error) {
+      return setCustomError(
+        error.code === '23503'
+          ? `"${ex.name}" is used in a workout, so it can't be deleted.`
+          : error.message
+      );
+    }
+    loadCustom();
   }
 
   async function signOut() {
@@ -127,6 +159,48 @@ export default function ProfilePage() {
           {saving ? 'Saving…' : 'Save profile'}
         </Button>
       </Card>
+      <Card className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold">My exercises</h2>
+          {!adding && (
+            <button onClick={() => setAdding(true)} className="text-sm font-semibold text-blue-600">
+              + Add
+            </button>
+          )}
+        </div>
+        {adding && (
+          <CreateExerciseForm
+            defaultMuscle="chest"
+            onCancel={() => setAdding(false)}
+            onCreated={() => {
+              setAdding(false);
+              loadCustom();
+            }}
+          />
+        )}
+        <ErrorText>{customError}</ErrorText>
+        {custom.length === 0 && !adding && (
+          <p className="text-sm text-stone-500">
+            Add machines or movements that are not in the library. The AI can use them when it plans your workouts.
+          </p>
+        )}
+        <ul className="divide-y divide-stone-100 dark:divide-stone-800">
+          {custom.map((ex) => (
+            <li key={ex.id} className="flex items-center justify-between py-2 text-sm">
+              <span>
+                {ex.name}
+                <span className="block text-xs text-stone-500">
+                  {ex.primary_muscle} · {ex.equipment}
+                </span>
+              </span>
+              <button onClick={() => removeCustom(ex)} className="text-xs text-stone-400">
+                Delete
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Card>
+
       <Button variant="ghost" className="w-full" onClick={signOut}>
         Sign out
       </Button>

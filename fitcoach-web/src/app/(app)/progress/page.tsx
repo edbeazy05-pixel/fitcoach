@@ -8,6 +8,7 @@ import { addDays, todayIn, weekdayOf } from '@/lib/dates';
 import { estimate1RM } from '@/lib/overload';
 import type { HistoryRow } from '@/lib/types';
 import { Button, Card, ErrorText, PageTitle } from '@/components/ui';
+import { BodyMetrics } from '@/components/BodyMetrics';
 
 type Review = { week_start: string; summary: string };
 
@@ -19,6 +20,7 @@ export default function ProgressPage() {
   const [selected, setSelected] = useState('');
   const [review, setReview] = useState<Review | null>(null);
   const [tz, setTz] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const [units, setUnits] = useState<'lb' | 'kg'>('lb');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [mounted, setMounted] = useState(false);
@@ -36,9 +38,10 @@ export default function ProgressPage() {
   useEffect(() => {
     (async () => {
       setMounted(true);
-      const { data: p } = await supabase.from('profiles').select('timezone').maybeSingle();
+      const { data: p } = await supabase.from('profiles').select('timezone, units').maybeSingle();
       const zone = p?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
       setTz(zone);
+      if (p?.units) setUnits(p.units);
 
       const { data: h } = await supabase
         .from('exercise_history')
@@ -116,6 +119,8 @@ export default function ProgressPage() {
           {busy ? 'Writing…' : 'Review the last 7 days'}
         </Button>
       </Card>
+
+      <BodyMetrics units={units} tz={tz} />
 
       <Card className="space-y-3">
         <h2 className="font-semibold">Estimated 1-rep max</h2>
