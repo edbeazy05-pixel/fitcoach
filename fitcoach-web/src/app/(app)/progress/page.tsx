@@ -9,6 +9,7 @@ import { estimate1RM } from '@/lib/overload';
 import type { HistoryRow } from '@/lib/types';
 import { Button, Card, ErrorText, PageTitle } from '@/components/ui';
 import { BodyMetrics } from '@/components/BodyMetrics';
+import { RunStats } from '@/components/RunStats';
 
 type Review = { week_start: string; summary: string };
 
@@ -119,6 +120,8 @@ export default function ProgressPage() {
           {busy ? 'Writing…' : 'Review the last 7 days'}
         </Button>
       </Card>
+
+      <RunStats tz={tz} />
 
       <BodyMetrics units={units} tz={tz} />
 

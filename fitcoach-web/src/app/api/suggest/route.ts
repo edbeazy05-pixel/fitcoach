@@ -12,7 +12,11 @@ export async function POST(req: Request) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return Response.json({ error: 'A date (YYYY-MM-DD) is required' }, { status: 400 });
 
   try {
-    return Response.json(await generateWorkout(user.id, date, !!body.regenerate));
+    // Optional: plan a specific workout type from the user's split, and/or replace a planned workout
+    const dayLabel = typeof body.day_label === 'string' && body.day_label.length <= 60 ? body.day_label : undefined;
+    const replaceId =
+      typeof body.replace_id === 'string' && /^[0-9a-f-]{36}$/i.test(body.replace_id) ? body.replace_id : undefined;
+    return Response.json(await generateWorkout(user.id, date, { regenerate: !!body.regenerate, dayLabel, replaceId }));
   } catch (e) {
     return Response.json({ error: e instanceof Error ? e.message : 'Something went wrong' }, { status: 500 });
   }

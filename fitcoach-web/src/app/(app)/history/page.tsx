@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { addDays, prettyDate, todayIn, weekdayOf } from '@/lib/dates';
+import { fmtDuration, fmtPace, runTypeLabel, secondsPerMile } from '@/lib/runs';
+import type { Run } from '@/lib/types';
 import { Card, ErrorText, PageTitle } from '@/components/ui';
 
 type Row = {
@@ -31,6 +33,8 @@ export default function HistoryPage() {
   const router = useRouter();
   const [rows, setRows] = useState<Row[] | null>(null);
   const [tz, setTz] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [filter, setFilter] = useState<'all' | 'lifts' | 'runs'>('all');
   const [view, setView] = useState<'list' | 'calendar'>('list');
   const [month, setMonth] = useState('');
   const [selected, setSelected] = useState('');
@@ -52,6 +56,15 @@ export default function HistoryPage() {
       .order('workout_date', { ascending: false })
       .limit(600);
     setRows((data ?? []) as unknown as Row[]);
+
+    // Runs (empty if the runs table has not been created yet)
+    const { data: runData } = await supabase
+      .from('runs')
+      .select('*')
+      .gte('run_date', addDays(today, -400))
+      .order('run_date', { ascending: false })
+      .limit(600);
+    setRuns(((runData ?? []) as Run[]).map((r) => ({ ...r, distance_mi: Number(r.distance_mi) })));
   }, []);
 
   useEffect(() => {
@@ -62,6 +75,13 @@ export default function HistoryPage() {
   async function remove(id: string) {
     if (!confirm('Delete this workout and all its sets?')) return;
     const { error } = await supabase.from('workouts').delete().eq('id', id);
+    if (error) return setError(error.message);
+    load();
+  }
+
+  async function removeRun(id: string) {
+    if (!confirm('Delete this run?')) return;
+    const { error } = await supabase.from('runs').delete().eq('id', id);
     if (error) return setError(error.message);
     load();
   }
@@ -115,7 +135,15 @@ export default function HistoryPage() {
     router.push(`/workout/${created.id}`);
   }
 
-  const finished = useMemo(() => (rows ?? []).filter((r) => r.status !== 'planned').slice(0, 60), [rows]);
+  // Workouts and runs together, newest first
+  const items = useMemo(() => {
+    const list: { key: string; date: string; workout?: Row; run?: Run }[] = [];
+    if (filter !== 'runs') {
+      for (const w of (rows ?? []).filter((r) => r.status !== 'planned')) list.push({ key: w.id, date: w.workout_date, workout: w });
+    }
+    if (filter !== 'lifts') for (const r of runs) list.push({ key: r.id, date: r.run_date, run: r });
+    return list.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 60);
+  }, [rows, runs, filter]);
 
   return (
     <div className="space-y-3">
@@ -140,16 +168,34 @@ export default function HistoryPage() {
 
       {rows && view === 'list' && (
         <>
-          {finished.length === 0 && <p className="text-stone-500">No workouts yet. Start one from the Today tab.</p>}
-          {finished.map((w) => (
-            <WorkoutCard key={w.id} w={w} busy={busy === w.id} onRepeat={repeat} onDelete={remove} />
-          ))}
+          <div className="flex gap-2">
+            {(['all', 'lifts', 'runs'] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className={`rounded-full px-3 py-1.5 text-sm font-medium capitalize ${
+                  filter === f ? 'bg-blue-600 text-white' : 'bg-stone-100 dark:bg-stone-800'
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+          {items.length === 0 && <p className="text-stone-500">Nothing here yet. Start a workout or log a run from the Today tab.</p>}
+          {items.map((it) =>
+            it.workout ? (
+              <WorkoutCard key={it.key} w={it.workout} busy={busy === it.key} onRepeat={repeat} onDelete={remove} />
+            ) : (
+              <RunCard key={it.key} r={it.run!} onDelete={removeRun} />
+            )
+          )}
         </>
       )}
 
       {rows && view === 'calendar' && (
         <CalendarView
           rows={rows}
+          runs={runs}
           month={month}
           setMonth={setMonth}
           selected={selected}
@@ -158,6 +204,7 @@ export default function HistoryPage() {
           busyId={busy}
           onRepeat={repeat}
           onDelete={remove}
+          onDeleteRun={removeRun}
         />
       )}
     </div>
@@ -206,10 +253,47 @@ function WorkoutCard({
   );
 }
 
+/* ---------- one run ---------- */
+
+function RunCard({ r, onDelete }: { r: Run; onDelete: (id: string) => void }) {
+  return (
+    <Card className="space-y-2">
+      <Link href={`/runs/${r.id}`} className="block">
+        <div className="flex items-start justify-between gap-2">
+          <p className="font-semibold">
+            {r.distance_mi} mi · {runTypeLabel(r.run_type)} run
+          </p>
+          <span className="flex shrink-0 gap-1">
+            {r.rpe && (
+              <span className="rounded bg-blue-100 px-1.5 py-0.5 text-xs font-bold text-blue-800">RPE {r.rpe}</span>
+            )}
+            <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-bold text-emerald-800">RUN</span>
+          </span>
+        </div>
+        <p className="text-xs text-stone-500">
+          {prettyDate(r.run_date)} · {fmtDuration(r.duration_seconds)} · {fmtPace(secondsPerMile(r.distance_mi, r.duration_seconds))} /mi ·{' '}
+          {r.location}
+          {r.avg_hr ? ` · ${r.avg_hr} bpm` : ''}
+        </p>
+        {r.notes && <p className="mt-1 line-clamp-2 text-xs italic text-stone-600 dark:text-stone-300">“{r.notes}”</p>}
+      </Link>
+      <div className="flex gap-4 text-xs font-semibold">
+        <Link href={`/runs/${r.id}`} className="text-blue-600">
+          Edit
+        </Link>
+        <button onClick={() => onDelete(r.id)} className="text-stone-400">
+          Delete
+        </button>
+      </div>
+    </Card>
+  );
+}
+
 /* ---------- calendar ---------- */
 
 function CalendarView({
   rows,
+  runs,
   month,
   setMonth,
   selected,
@@ -218,8 +302,10 @@ function CalendarView({
   busyId,
   onRepeat,
   onDelete,
+  onDeleteRun,
 }: {
   rows: Row[];
+  runs: Run[];
   month: string;
   setMonth: (m: string) => void;
   selected: string;
@@ -228,12 +314,19 @@ function CalendarView({
   busyId: string;
   onRepeat: (w: Row) => void;
   onDelete: (id: string) => void;
+  onDeleteRun: (id: string) => void;
 }) {
   const byDate = useMemo(() => {
     const map: Record<string, Row[]> = {};
     for (const r of rows) (map[r.workout_date] ??= []).push(r);
     return map;
   }, [rows]);
+
+  const runsByDate = useMemo(() => {
+    const map: Record<string, Run[]> = {};
+    for (const r of runs) (map[r.run_date] ??= []).push(r);
+    return map;
+  }, [runs]);
 
   const [y, m] = month.split('-').map(Number);
   const lead = (weekdayOf(`${month}-01`) + 6) % 7; // Monday first
@@ -246,7 +339,9 @@ function CalendarView({
     timeZone: 'UTC',
   });
   const doneThisMonth = rows.filter((r) => r.status === 'done' && monthOf(r.workout_date) === month).length;
+  const monthMiles = runs.filter((r) => monthOf(r.run_date) === month).reduce((a, r) => a + r.distance_mi, 0);
   const dayRows = byDate[selected] ?? [];
+  const dayRuns = runsByDate[selected] ?? [];
 
   return (
     <div className="space-y-3">
@@ -259,6 +354,7 @@ function CalendarView({
             <p className="font-semibold">{title}</p>
             <p className="text-xs text-stone-500">
               {doneThisMonth} workout{doneThisMonth === 1 ? '' : 's'} finished
+              {monthMiles > 0 ? ` · ${Math.round(monthMiles * 10) / 10} mi run` : ''}
             </p>
           </div>
           <button onClick={() => setMonth(shiftMonth(month, 1))} className="px-3 py-1 text-lg" aria-label="Next month">
@@ -280,6 +376,7 @@ function CalendarView({
             const hasDone = list.some((r) => r.status === 'done');
             const hasActive = list.some((r) => r.status === 'in_progress');
             const hasPlanned = list.some((r) => r.status === 'planned');
+            const hasRun = (runsByDate[date] ?? []).length > 0;
             return (
               <button
                 key={date}
@@ -292,6 +389,7 @@ function CalendarView({
                 <span className="mt-0.5 flex h-1.5 gap-0.5">
                   {hasDone && <i className={`h-1.5 w-1.5 rounded-full ${date === selected ? 'bg-white' : 'bg-blue-600'}`} />}
                   {hasActive && <i className="h-1.5 w-1.5 rounded-full bg-amber-500" />}
+                  {hasRun && <i className={`h-1.5 w-1.5 rounded-full ${date === selected ? 'bg-emerald-300' : 'bg-emerald-500'}`} />}
                   {hasPlanned && (
                     <i className={`h-1.5 w-1.5 rounded-full border ${date === selected ? 'border-white' : 'border-stone-500'}`} />
                   )}
@@ -311,6 +409,10 @@ function CalendarView({
             in progress
           </span>
           <span>
+            <i className="mr-1 inline-block h-2 w-2 rounded-full bg-emerald-500" />
+            run
+          </span>
+          <span>
             <i className="mr-1 inline-block h-2 w-2 rounded-full border border-stone-500" />
             planned
           </span>
@@ -318,9 +420,12 @@ function CalendarView({
       </Card>
 
       <h2 className="text-sm font-semibold text-stone-500">{prettyDate(selected)}</h2>
-      {dayRows.length === 0 && <p className="text-sm text-stone-500">No workout on this day.</p>}
+      {dayRows.length === 0 && dayRuns.length === 0 && <p className="text-sm text-stone-500">Nothing logged on this day.</p>}
       {dayRows.map((w) => (
         <WorkoutCard key={w.id} w={w} busy={busyId === w.id} onRepeat={onRepeat} onDelete={onDelete} />
+      ))}
+      {dayRuns.map((r) => (
+        <RunCard key={r.id} r={r} onDelete={onDeleteRun} />
       ))}
     </div>
   );

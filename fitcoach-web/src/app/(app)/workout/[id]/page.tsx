@@ -9,6 +9,7 @@ import { prettyDate } from '@/lib/dates';
 import type { Exercise, HistoryRow, Workout, WorkoutExercise } from '@/lib/types';
 import { Button, Card, ErrorText, Input } from '@/components/ui';
 import { ExercisePicker } from '@/components/ExercisePicker';
+import { RpePicker } from '@/components/RpePicker';
 
 type Prev = { date: string; sets: { weight: number; reps: number }[]; best1RM: number };
 
@@ -29,19 +30,6 @@ async function fetchPrev(exerciseId: string, beforeDate: string): Promise<Prev |
   }
   return p.date ? p : null;
 }
-
-const RPE_HINT: Record<number, string> = {
-  1: 'Very light',
-  2: 'Very light',
-  3: 'Light',
-  4: 'Moderate',
-  5: 'Moderate',
-  6: 'Somewhat hard',
-  7: 'Hard, a few reps left in the tank',
-  8: 'Very hard, about 2 reps left',
-  9: 'Almost max, 1 rep left',
-  10: 'All-out',
-};
 
 /* ---------- small hooks ---------- */
 
@@ -593,28 +581,7 @@ function ExerciseCard({
   );
 }
 
-/* ---------- effort rating ---------- */
-
-function RpePicker({ value, onChange }: { value: number | null; onChange: (v: number | null) => void }) {
-  return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-5 gap-1.5">
-        {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
-          <button
-            key={n}
-            onClick={() => onChange(value === n ? null : n)}
-            className={`rounded-lg py-2.5 text-sm font-semibold ${
-              value === n ? 'bg-blue-600 text-white' : 'bg-stone-100 dark:bg-stone-800'
-            }`}
-          >
-            {n}
-          </button>
-        ))}
-      </div>
-      <p className="text-xs text-stone-500">{value ? `${value}: ${RPE_HINT[value]}` : '1 = very easy, 10 = all-out. Tap again to clear.'}</p>
-    </div>
-  );
-}
+/* ---------- finish ---------- */
 
 function FinishSheet({ onFinish, onCancel }: { onFinish: (rpe: number | null) => void; onCancel: () => void }) {
   const [rpe, setRpe] = useState<number | null>(null);

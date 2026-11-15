@@ -73,3 +73,17 @@ export type HistoryRow = {
   weight: number;
   reps: number;
 };
+
+export type Run = {
+  id: string;
+  run_date: string;
+  run_type: 'easy' | 'long' | 'tempo' | 'intervals' | 'race' | 'other';
+  location: 'outdoor' | 'treadmill';
+  distance_mi: number;
+  duration_seconds: number;
+  avg_hr: number | null;
+  calories: number | null;
+  elevation_ft: number | null;
+  rpe: number | null;
+  notes: string | null;
+};
