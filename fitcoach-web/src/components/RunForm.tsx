@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { fmtDuration, fmtPace, parseDuration, RUN_TYPES, secondsPerMile } from '@/lib/runs';
 import type { Run } from '@/lib/types';
+import { estimateRunCalories } from '@/lib/body';
 import { RpePicker, RUN_RPE_HINT } from '@/components/RpePicker';
 import { Button, Card, ErrorText, Field, Input } from '@/components/ui';
 
@@ -41,10 +42,18 @@ export function RunForm({
   const [notes, setNotes] = useState(initial?.notes ?? '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [weightKg, setWeightKg] = useState<number | null>(null);
+
+  // Trend weight from Bodycoach, for the calorie estimate
+  useEffect(() => {
+    supabase.from('body_status').select('trend_kg').maybeSingle()
+      .then(({ data }) => setWeightKg(data?.trend_kg ? Number(data.trend_kg) : null), () => {});
+  }, []);
 
   const miles = Number(distance);
   const seconds = parseDuration(time);
   const pace = miles > 0 && seconds ? fmtPace(secondsPerMile(miles, seconds)) : null;
+  const estimate = weightKg && miles > 0 && miles < 200 ? estimateRunCalories(weightKg, miles) : null;
 
   async function save() {
     setError('');
@@ -65,7 +74,8 @@ export function RunForm({
       distance_mi: Math.round(miles * 100) / 100,
       duration_seconds: seconds,
       avg_hr: hrN ?? null,
-      calories: calN ?? null,
+      // Left blank: save the estimate from your weight so the number is never missing
+      calories: calN ?? estimate ?? null,
       elevation_ft: elevN ?? null,
       rpe,
       notes: notes.trim() || null,
@@ -131,7 +141,8 @@ export function RunForm({
           <Input inputMode="numeric" value={hr} onChange={(e) => setHr(e.target.value)} />
         </Field>
         <Field label="Calories (optional)">
-          <Input inputMode="numeric" value={calories} onChange={(e) => setCalories(e.target.value)} />
+          <Input inputMode="numeric" value={calories} placeholder={estimate ? `≈ ${estimate}` : ''}
+            onChange={(e) => setCalories(e.target.value)} />
         </Field>
         {location === 'outdoor' && (
           <Field label="Elevation gain, ft (optional)">
@@ -139,6 +150,12 @@ export function RunForm({
           </Field>
         )}
       </div>
+
+      {estimate && !calories.trim() && (
+        <p className="-mt-2 text-xs text-stone-500">
+          Left blank, calories are saved as ≈ {estimate}, estimated from your Bodycoach weight. A watch reading is more accurate.
+        </p>
+      )}
 
       <div>
         <p className="mb-2 text-xs font-medium text-stone-500">How hard did it feel? (optional)</p>

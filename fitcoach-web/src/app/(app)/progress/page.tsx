@@ -8,7 +8,9 @@ import { addDays, todayIn, weekdayOf } from '@/lib/dates';
 import { estimate1RM } from '@/lib/overload';
 import type { HistoryRow } from '@/lib/types';
 import { Button, Card, ErrorText, PageTitle } from '@/components/ui';
-import { BodyMetrics } from '@/components/BodyMetrics';
+import { BodySummary } from '@/components/BodySummary';
+import { useBodyContext } from '@/lib/useBody';
+import { kgTo } from '@/lib/body';
 import { RunStats } from '@/components/RunStats';
 
 type Review = { week_start: string; summary: string };
@@ -25,6 +27,7 @@ export default function ProgressPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [mounted, setMounted] = useState(false);
+  const body = useBodyContext(tz);
 
   async function loadReview() {
     const { data } = await supabase
@@ -99,6 +102,11 @@ export default function ProgressPage() {
     setBusy(false);
   }
 
+  // Strength relative to body weight: latest estimated 1RM divided by trend weight (lifts are logged in your units)
+  const latestE1rm = strengthData.length ? strengthData[strengthData.length - 1].e1rm : null;
+  const bodyweight = body?.trend_kg != null ? kgTo(body.trend_kg, units) : null;
+  const relative = latestE1rm && bodyweight ? latestE1rm / bodyweight : null;
+
   const exerciseOptions = Object.entries(names).sort((a, b) => a[1].localeCompare(b[1]));
 
   return (
@@ -123,7 +131,7 @@ export default function ProgressPage() {
 
       <RunStats tz={tz} />
 
-      <BodyMetrics units={units} tz={tz} />
+      <BodySummary ctx={body} units={units} />
 
       <Card className="space-y-3">
         <h2 className="font-semibold">Estimated 1-rep max</h2>
@@ -142,6 +150,12 @@ export default function ProgressPage() {
                 </option>
               ))}
             </select>
+            {relative != null && (
+              <p className="text-sm">
+                Latest {latestE1rm} {units} = <b>{relative.toFixed(2)}× body weight</b>
+                <span className="text-stone-500"> (trend {Math.round(bodyweight!)} {units}, from Bodycoach)</span>
+              </p>
+            )}
             <div className="h-56">
               {mounted && (
                 <ResponsiveContainer width="100%" height="100%">
